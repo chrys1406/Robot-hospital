@@ -1,4 +1,3 @@
-import * as THREE from 'three';
 import { createScene } from './scene.js';
 import { createRobot } from './robot/robot.js';
 import { RobotAnimator } from './robot/animator.js';
@@ -12,15 +11,17 @@ export function mountRobotScene(container, { interactive = true } = {}) {
   scene.add(robot.root);
   const animator = new RobotAnimator(robot);
 
-  const clock = new THREE.Clock();
+  let last = performance.now();
   let raf = 0;
-  const loop = () => {
+  const loop = (now) => {
     raf = requestAnimationFrame(loop);
-    animator.update(clock.getDelta());
+    const dt = Math.min((now - last) / 1000, 0.1); // segundos, con tope por si la pestaña estuvo en segundo plano
+    last = now;
+    animator.update(dt);
     controls.update();
     renderer.render(scene, camera);
   };
-  loop();
+  raf = requestAnimationFrame(loop);
 
   return {
     setState: (name) => animator.setState(name),
