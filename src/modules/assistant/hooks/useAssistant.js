@@ -1,29 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createListener, sttSupported } from '../voice/stt.js';
+import { createAudioRecorder, micSupported } from '../voice/stt.js';
 import { speak, stopSpeaking } from '../voice/tts.js';
 import { defaultBrain } from '../brain/defaultBrain.js';
 
 const ERRORS = {
   'not-allowed': 'Permiso de micrófono denegado.',
-  'no-speech': 'No te escuché, intenta de nuevo.',
   'audio-capture': 'No se encontró micrófono.',
-  network: 'Error de red en el reconocimiento de voz.',
+  'mic-failed': 'No se pudo acceder al micrófono.',
+  'recording-error': 'Error al grabar el audio.',
+  'empty-audio': 'No se captó audio, intenta de nuevo.',
 };
 
 /**
- * Ciclo completo: escuchar → pensar → hablar.
- * `respond(texto)` es el punto de conexión con el sistema: recibe lo que dijo el
- * usuario y devuelve (o promete) el texto que dirá el robot.
- * Devuelve `phase` ('reposo' | 'escuchando' | 'hablando') para pasárselo al robot.
+ * `respond` puede recibir un string (texto) o un objeto { text, audioBlob }.
+ * `autoSpeak`: si es false, muestra la respuesta en texto sin hablar todavía (útil para probar la IA primero).
  */
-export function useAssistant({ respond = defaultBrain, lang = 'es-419' } = {}) {
+export function useAssistant({
+  respond = defaultBrain,
+  lang = 'es-419',
+  autoSpeak = false,
+} = {}) {
   const [phase, setPhase] = useState('reposo');
   const [userText, setUserText] = useState('');
   const [botText, setBotText] = useState('');
   const [error, setError] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
 
   const respondRef = useRef(respond);
-  const listenerRef = useRef(null);
+  const recorderRef = useRef(null);
   const busyRef = useRef(false);
 
   useEffect(() => {
@@ -32,7 +36,17 @@ export function useAssistant({ respond = defaultBrain, lang = 'es-419' } = {}) {
 
   const say = useCallback(
     (text) => {
+      if (!text) {
+        busyRef.current = false;
+        setPhase('reposo');
+        return;
+      }
       setBotText(text);
+      if (!autoSpeak) {
+        busyRef.current = false;
+        setPhase('reposo');
+        return;
+      }
       speak(text, {
         lang,
         onStart: () => setPhase('hablando'),
@@ -42,51 +56,98 @@ export function useAssistant({ respond = defaultBrain, lang = 'es-419' } = {}) {
         },
       });
     },
-    [lang]
+    [autoSpeak, lang]
+  );
+
+  const sendText = useCallback(
+    async (rawText) => {
+      const clean = (rawText || '').trim();
+      if (!clean) return;
+      stopSpeaking();
+      setError('');
+      setUserText(clean);
+      busyRef.current = true;
+      setPhase('escuchando');
+      try {
+        const reply = await respondRef.current(clean);
+        say(reply);
+      } catch (err) {
+        setError(err?.message || 'Error al consultar la IA.');
+        busyRef.current = false;
+        setPhase('reposo');
+      }
+    },
+    [say]
   );
 
   useEffect(() => {
-    const listener = createListener({
-      lang,
+    const recorder = createAudioRecorder({
       onStart: () => {
         setError('');
+        setIsRecording(true);
         setPhase('escuchando');
       },
-      onResult: async (text, isFinal) => {
-        setUserText(text);
-        if (!isFinal || !text) return;
-        busyRef.current = true;
-        try {
-          say(await respondRef.current(text));
-        } catch {
-          say('Tuve un problema para responder. Intenta de nuevo.');
-        }
-      },
-      onError: (e) => {
-        setError(ERRORS[e] ?? `Error: ${e}`);
-        setPhase('reposo');
-      },
-      onEnd: () => {
+      onError: (code) => {
+        setError(ERRORS[code] ?? `Error: ${code}`);
         if (!busyRef.current) setPhase('reposo');
       },
+      onEnd: () => {
+        setIsRecording(false);
+        if (!busyRef.current) setPhase('reposo');
+      },
+      onAudioReady: async (audioBlob) => {
+        busyRef.current = true;
+        setPhase('escuchando');
+        setUserText('[Audio enviado]');
+        try {
+          const reply = await respondRef.current({ audioBlob });
+          say(reply);
+        } catch (err) {
+          setError(err?.message || 'Error al procesar el audio con la IA.');
+          busyRef.current = false;
+          setPhase('reposo');
+        }
+      },
     });
-    listenerRef.current = listener;
+
+    recorderRef.current = recorder;
     return () => {
-      listener?.stop();
+      recorder?.stop();
       stopSpeaking();
     };
-  }, [lang, say]);
+  }, [say]);
 
   const listen = useCallback(() => {
     stopSpeaking();
-    setUserText('');
-    listenerRef.current?.start();
+    if (!recorderRef.current) {
+      setError('Micrófono no disponible en este navegador.');
+      return;
+    }
+    if (recorderRef.current.isRecording()) {
+      recorderRef.current.stop();
+    } else {
+      recorderRef.current.start();
+    }
   }, []);
 
   const stop = useCallback(() => {
     stopSpeaking();
-    listenerRef.current?.stop();
+    recorderRef.current?.stop();
+    busyRef.current = false;
+    setIsRecording(false);
+    setPhase('reposo');
   }, []);
 
-  return { phase, userText, botText, error, supported: sttSupported, listen, say, stop };
+  return {
+    phase,
+    userText,
+    botText,
+    error,
+    supported: micSupported,
+    isRecording,
+    listen,
+    sendText,
+    say,
+    stop,
+  };
 }
