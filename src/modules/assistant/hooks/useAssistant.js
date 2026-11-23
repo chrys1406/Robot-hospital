@@ -12,11 +12,13 @@ const ERRORS = {
 };
 
 /**
- * `respond` puede recibir un string (texto) o un objeto { text, audioBlob }.
- * `autoSpeak`: si es false, muestra la respuesta en texto sin hablar todavía (útil para probar la IA primero).
+ * respond(texto | { audioBlob }) → texto de respuesta.
+ * transcribe(audioBlob) → texto. Si se pasa, el audio se transcribe y respond recibe solo texto.
+ * autoSpeak: si es true, el robot lee la respuesta en voz alta.
  */
 export function useAssistant({
   respond = defaultBrain,
+  transcribe = null,
   lang = 'es-419',
   autoSpeak = false,
 } = {}) {
@@ -27,57 +29,51 @@ export function useAssistant({
   const [isRecording, setIsRecording] = useState(false);
 
   const respondRef = useRef(respond);
+  const transcribeRef = useRef(transcribe);
   const recorderRef = useRef(null);
   const busyRef = useRef(false);
 
   useEffect(() => {
     respondRef.current = respond;
-  }, [respond]);
+    transcribeRef.current = transcribe;
+  }, [respond, transcribe]);
+
+  const finish = useCallback(() => {
+    busyRef.current = false;
+    setPhase('reposo');
+  }, []);
 
   const say = useCallback(
     (text) => {
-      if (!text) {
-        busyRef.current = false;
-        setPhase('reposo');
-        return;
-      }
+      if (!text) return finish();
       setBotText(text);
-      if (!autoSpeak) {
-        busyRef.current = false;
-        setPhase('reposo');
-        return;
-      }
+      if (!autoSpeak) return finish();
       speak(text, {
         lang,
         onStart: () => setPhase('hablando'),
-        onEnd: () => {
-          busyRef.current = false;
-          setPhase('reposo');
-        },
+        onEnd: finish,
       });
     },
-    [autoSpeak, lang]
+    [autoSpeak, lang, finish]
   );
 
   const sendText = useCallback(
     async (rawText) => {
       const clean = (rawText || '').trim();
-      if (!clean) return;
+      if (!clean || busyRef.current) return;
       stopSpeaking();
       setError('');
       setUserText(clean);
       busyRef.current = true;
       setPhase('escuchando');
       try {
-        const reply = await respondRef.current(clean);
-        say(reply);
+        say(await respondRef.current(clean));
       } catch (err) {
         setError(err?.message || 'Error al consultar la IA.');
-        busyRef.current = false;
-        setPhase('reposo');
+        finish();
       }
     },
-    [say]
+    [say, finish]
   );
 
   useEffect(() => {
@@ -96,16 +92,29 @@ export function useAssistant({
         if (!busyRef.current) setPhase('reposo');
       },
       onAudioReady: async (audioBlob) => {
+        if (busyRef.current) return;
         busyRef.current = true;
         setPhase('escuchando');
-        setUserText('[Audio enviado]');
         try {
-          const reply = await respondRef.current({ audioBlob });
-          say(reply);
+          let input;
+          if (transcribeRef.current) {
+            setUserText('Transcribiendo…');
+            const text = await transcribeRef.current(audioBlob);
+            if (!text) {
+              setUserText('');
+              setError('No se entendió el audio, intenta de nuevo.');
+              return finish();
+            }
+            setUserText(text);
+            input = text;
+          } else {
+            setUserText('[Audio enviado]');
+            input = { audioBlob };
+          }
+          say(await respondRef.current(input));
         } catch (err) {
-          setError(err?.message || 'Error al procesar el audio con la IA.');
-          busyRef.current = false;
-          setPhase('reposo');
+          setError(err?.message || 'Error al procesar el audio.');
+          finish();
         }
       },
     });
@@ -115,7 +124,7 @@ export function useAssistant({
       recorder?.stop();
       stopSpeaking();
     };
-  }, [say]);
+  }, [say, finish]);
 
   const listen = useCallback(() => {
     stopSpeaking();
@@ -123,11 +132,8 @@ export function useAssistant({
       setError('Micrófono no disponible en este navegador.');
       return;
     }
-    if (recorderRef.current.isRecording()) {
-      recorderRef.current.stop();
-    } else {
-      recorderRef.current.start();
-    }
+    if (recorderRef.current.isRecording()) recorderRef.current.stop();
+    else recorderRef.current.start();
   }, []);
 
   const stop = useCallback(() => {

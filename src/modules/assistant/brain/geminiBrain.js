@@ -7,6 +7,26 @@ Reglas importantes:
 - Responde de forma cordial, directa y concisa (idealmente 2 a 4 oraciones).
 `.trim();
 
+const norm = (s = '') =>
+  s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+function quickFallbackReply(text = '') {
+  const t = norm(text);
+  if (/(emergencia|urgencia|grave|no puedo respirar|sangrado|desmayo)/.test(t)) {
+    return 'Si es una emergencia médica, acude de inmediato al área de emergencias o solicita ayuda en recepción ahora mismo.';
+  }
+  if (/(cita|agendar|reservar|turno)/.test(t)) {
+    return 'Para agendar una cita, indícame la especialidad que necesitas y acércate o consulta en ventanilla de admisión.';
+  }
+  if (/(horario|atienden|abierto|hora)/.test(t)) {
+    return 'El área de emergencias atiende de forma continua; para consultorios externos, consulta en recepción los horarios vigentes.';
+  }
+  if (/(hola|buenas|buenos dias|buenas tardes|buenas noches)/.test(t)) {
+    return 'Hola, soy tu asistente del hospital. ¿En qué puedo orientarte hoy?';
+  }
+  return 'En este momento el servicio de inteligencia artificial está saturado. Por favor, indícame si buscas emergencias, citas o información de algún área para orientarte.';
+}
+
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -20,10 +40,28 @@ function blobToBase64(blob) {
   });
 }
 
+async function fetchGeminiWithTimeout({ url, payload, timeoutMs = 2400 }) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export function createGeminiBrain({
   apiKey,
   model = 'gemini-3.8-flash',
-  maxHistoryTurns = 10,
+  maxHistoryTurns = 8,
+  timeoutMs = 2400,
 } = {}) {
   if (!apiKey) {
     throw new Error('Falta la API Key de Gemini.');
@@ -69,37 +107,47 @@ export function createGeminiBrain({
       { role: 'user', parts: userParts },
     ];
 
+    const payload = {
+      systemInstruction: {
+        parts: [{ text: SYSTEM_INSTRUCTION }],
+      },
+      contents,
+      generationConfig: {
+        temperature: 0.6,
+        maxOutputTokens: 200,
+      },
+    };
+
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       model
     )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: SYSTEM_INSTRUCTION }],
-        },
-        contents,
-        generationConfig: {
-          temperature: 0.6,
-          maxOutputTokens: 280,
-        },
-      }),
-    });
+    let reply = '';
 
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      const msg = errData?.error?.message || `Error HTTP ${response.status}`;
-      throw new Error(msg);
+    try {
+      const response = await fetchGeminiWithTimeout({ url, payload, timeoutMs });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        const msg = errData?.error?.message || `Error HTTP ${response.status}`;
+        console.warn('[GeminiBrain]:', msg);
+        return quickFallbackReply(cleanText);
+      }
+
+      const data = await response.json();
+      reply =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((p) => p.text || '')
+          .join('')
+          .trim() || '';
+    } catch (err) {
+      console.warn('[GeminiBrain timeout/error]:', err?.name || err);
+      return quickFallbackReply(cleanText);
     }
 
-    const data = await response.json();
-    const reply =
-      data?.candidates?.[0]?.content?.parts
-        ?.map((p) => p.text || '')
-        .join('')
-        .trim() || 'No pude generar una respuesta en este momento.';
+    if (!reply) {
+      return quickFallbackReply(cleanText);
+    }
 
     const recordedUserParts = [];
     if (cleanText) recordedUserParts.push({ text: cleanText });
