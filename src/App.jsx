@@ -1,21 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AssistantRobot, AssistantPanel, useAssistant } from './modules/assistant';
+import { useMemo, useRef, useState } from 'react';
+import { AssistantRobot, ChatBar, RobotBubble, useAssistant, useRobotMood } from './modules/assistant';
 import { createHybridBrain } from './modules/assistant/brain/hybridBrain.js';
 import { createWhisperTranscriber } from './modules/assistant/voice/whisper.js';
-
-const DEV_STATES = [
-  ['reposo', '🕊️ Reposo'],
-  ['saludo', '👋 Saludar'],
-  ['escuchando', '👂 Escuchando'],
-  ['hablando', '💬 Hablando'],
-];
 
 const GROQ_KEY = import.meta.env.VITE_GROQ_API_KEY || '';
 const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 
 export default function App() {
   const robotRef = useRef(null);
-  const [forced, setForced] = useState('saludo');
+  const noticeTimer = useRef(0);
+  const [typing, setTyping] = useState(false);
+  const [notice, setNotice] = useState('');
 
   const brain = useMemo(
     () => createHybridBrain({ groqKey: GROQ_KEY, geminiKey: GEMINI_KEY }),
@@ -39,51 +34,60 @@ export default function App() {
     respond: (input) => brain.ask(typeof input === 'string' ? input : ''),
   });
 
-  useEffect(() => {
-    if (assistant.phase !== 'reposo') setForced(null);
-  }, [assistant.phase]);
+  const { robotState, thinking } = useRobotMood({ assistant, typing, robotRef });
 
-  const robotState = forced ?? assistant.phase;
+  const showNotice = (msg) => {
+    clearTimeout(noticeTimer.current);
+    setNotice(msg);
+    noticeTimer.current = setTimeout(() => setNotice(''), 4500);
+  };
+
+  const handleSend = ({ text, photo }) => {
+    if (photo) showNotice('Foto recibida. El análisis de imágenes todavía no está conectado.');
+    if (text) assistant.sendText(text);
+  };
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-slate-50">
-      <header className="pointer-events-none absolute left-6 top-6 z-10">
-        <h1 className="text-xl font-bold text-slate-800">ASISTENTE MÉDICO 3D</h1>
-        <p className="text-sm text-slate-500">Cerebro: Groq + Whisper (respaldo Gemini)</p>
+    <div className="relative h-screen w-screen overflow-hidden bg-gradient-to-b from-sky-50 via-white to-slate-100">
+      <header className="pointer-events-none absolute left-6 top-6 z-10 flex items-center gap-3">
+        <div className="grid h-10 w-10 place-items-center rounded-2xl bg-sky-500 text-lg font-bold text-white shadow-lg">
+          ✚
+        </div>
+        <div>
+          <h1 className="text-lg font-bold leading-tight text-slate-800">Asistente Médico</h1>
+          <p className="text-xs text-slate-500">Orientación y atención</p>
+        </div>
       </header>
 
       <AssistantRobot ref={robotRef} state={robotState} />
 
-      <div className="absolute right-6 top-6 z-10">
-        <AssistantPanel
-          {...assistant}
-          onListen={assistant.listen}
-          onSendText={assistant.sendText}
-        />
-      </div>
+      <RobotBubble thinking={thinking} text={assistant.botText} />
 
-      <div className="absolute bottom-6 left-1/2 z-10 flex -translate-x-1/2 flex-wrap justify-center gap-2 rounded-full bg-white/90 px-4 py-2 shadow-lg backdrop-blur">
-        {DEV_STATES.map(([name, label]) => (
-          <button
-            key={name}
-            type="button"
-            onClick={() => setForced(name)}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-              robotState === name
-                ? 'bg-sky-500 text-white shadow'
-                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={() => robotRef.current?.blink()}
-          className="rounded-full bg-sky-100 px-4 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-200"
-        >
-          😉 Parpadear
-        </button>
+      <div className="absolute inset-x-0 bottom-6 z-10 flex flex-col items-center gap-2 px-4">
+        {assistant.error && (
+          <p className="rounded-full bg-red-50 px-4 py-1 text-xs font-medium text-red-600 shadow">
+            {assistant.error}
+          </p>
+        )}
+        {notice && (
+          <p className="rounded-full bg-amber-50 px-4 py-1 text-xs font-medium text-amber-700 shadow">
+            {notice}
+          </p>
+        )}
+        {assistant.userText && (
+          <p className="max-w-md truncate rounded-full bg-white/80 px-4 py-1 text-xs text-slate-500 shadow">
+            Tú: {assistant.userText}
+          </p>
+        )}
+
+        <ChatBar
+          onSend={handleSend}
+          onToggleRecord={assistant.listen}
+          isRecording={assistant.isRecording}
+          micSupported={assistant.supported}
+          busy={thinking || assistant.phase === 'hablando'}
+          onTypingChange={setTyping}
+        />
       </div>
     </div>
   );
