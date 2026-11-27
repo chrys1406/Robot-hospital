@@ -12,3 +12,12 @@ export const userDb = (token) =>
     ...base,
     global: { headers: { Authorization: `Bearer ${token}` } },
   })
+
+// Llave maestra: SOLO para lo que no puede hacerse con la sesión de un usuario
+// (altas de usuarios, y el paciente que responde sin login). Siempre se valida antes quién pide qué.
+let admin = null
+export function adminDb() {
+  if (!config.supabaseServiceKey) throw new Error('Falta SUPABASE_SERVICE_ROLE_KEY en backend/.env')
+  admin ??= createClient(config.supabaseUrl, config.supabaseServiceKey, base)
+  return admin
+}

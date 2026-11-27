@@ -15,6 +15,8 @@ export const config = {
   groqChatModel: process.env.GROQ_CHAT_MODEL ?? 'openai/gpt-oss-120b',
   whisperModel: process.env.WHISPER_MODEL ?? 'whisper-large-v3-turbo',
   centerId: process.env.CENTER_ID ?? '00000000-0000-4000-8000-000000000001',
+  actionSecret: required('ACTION_SIGNING_SECRET'),
+  patientAppUrl: (process.env.PATIENT_APP_URL ?? 'http://localhost:5173').replace(/\/$/, ''),
   corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:5173')
     .split(',').map((s) => s.trim()).filter(Boolean),
 }
